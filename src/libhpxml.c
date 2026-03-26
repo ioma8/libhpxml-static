@@ -89,41 +89,26 @@ int is_delim(char c)
 }
 
 
+/*! No-op: static hpx_tag_t values need no freeing. Kept for API compatibility. */
 void hpx_tm_free(hpx_tag_t *t)
 {
-   free(t);
+   (void) t;
 }
 
 
-/*! This function recursively frees a tree with all its subtrees and tags.
- *  @param tlist Pointer to tree which should be freed.
- */
+/*! No-op: static hpx_tree_t values need no freeing. Kept for API compatibility. */
 void hpx_tm_free_tree(hpx_tree_t *tlist)
 {
-   int i;
-
-   // break recursion
-   if (tlist == NULL)
-      return;
-
-   // recursively free all subtrees
-   for (i = 0; i < tlist->msub; i++)
-      hpx_tm_free_tree(tlist->subtag[i]);
-
-   // free tag element of tree
-   hpx_tm_free(tlist->tag);
-   // free tree itself
-   free(tlist);
+   (void) tlist;
 }
 
 
-hpx_tag_t *hpx_tm_create(int n)
+/*! Initialize a caller-allocated hpx_tag_t with space for up to n attributes.
+ *  n is clamped to HPX_MAX_ATTR. */
+void hpx_tag_init(hpx_tag_t *t, int n)
 {
-   hpx_tag_t *t;
-   if ((t = malloc(sizeof(hpx_tag_t) + n * sizeof(hpx_attr_t))) == NULL)
-      return NULL;
-   t->mattr = n;
-   return t;
+   memset(t, 0, sizeof(*t));
+   t->mattr = (n > 0 && n <= HPX_MAX_ATTR) ? n : HPX_MAX_ATTR;
 }
 
 
@@ -536,60 +521,20 @@ static int hpx_madvise(void *addr, size_t length, int advice)
 }
 
 
-/*! This function initializes the control structure which is the foundation for
- * all other functions. Please note that memory mapping is the recommended
- * method (see parameter len).
- *  @param fd Input file descriptor.
- *  @param len Read buffer length. If len is negative, the file is memory
- *  mapped with mmap(). This works only if it was compiled with WITH_MMAP.
- *  @return Pointer to allocated hpx_ctrl_t structure. On error NULL is
- *  returned and errno is set. If compiled without WITH_MMAP and hpx_init() is
- *  called with negative len parameter, NULL is returned and errno is set to
- *  EINVAL.
+/*! Initialize a caller-allocated hpx_ctrl_t for block I/O.
+ *  @param ctl  Caller-allocated control structure (no malloc is performed).
+ *  @param buf  Caller-provided read buffer.
+ *  @param buflen  Number of bytes in buf.
+ *  @param fd   Input file descriptor.
  */
-hpx_ctrl_t *hpx_init(int fd, long len)
+void hpx_init_static(hpx_ctrl_t *ctl, char *buf, long buflen, int fd)
 {
-   hpx_ctrl_t *ctl;
-
-   if ((ctl = malloc(sizeof(*ctl) + (len < 0 ? 0 : len))) == NULL)
-      return NULL;
-
    memset(ctl, 0, sizeof(*ctl));
    ctl->fd = fd;
-   // init line counter
    ctl->lineno = 1;
-
-   if (len < 0)
-   {
-#ifdef WITH_MMAP
-      ctl->len = ctl->buf.len = -len;
-      if ((ctl->buf.buf = mmap(NULL, ctl->len, PROT_READ, MAP_PRIVATE | MAP_NORESERVE, fd, 0)) == MAP_FAILED)
-      {
-         free(ctl);
-         return NULL;
-      }
-      ctl->mmap = 1;
-      ctl->madv_ptr = ctl->buf.buf;
-      if ((ctl->pg_siz = sysconf(_SC_PAGESIZE)) == -1)
-         ctl->pg_siz = 0;
-      ctl->pg_blk_siz = ctl->pg_siz * MMAP_PAGES;
-
-      // advise 1st block
-      hpx_madvise(ctl->madv_ptr, ctl->pg_blk_siz <= ctl->len ? ctl->pg_blk_siz : ctl->len, MADV_WILLNEED);
- 
-      return ctl;
-#else
-      errno = EINVAL;
-      free(ctl);
-      return NULL;
-#endif
-   }
-
-   ctl->buf.buf = (char*) (ctl + 1);
-   ctl->len = len;
+   ctl->buf.buf = buf;
+   ctl->len = buflen;
    ctl->empty = 1;
-
-   return ctl;
 }
 
 
@@ -611,14 +556,49 @@ void hpx_init_membuf(hpx_ctrl_t *ctl, void *buf, int len)
 }
 
 
+/*! Initialize a caller-allocated hpx_ctrl_t to memory-map fd (no malloc).
+ *  @param ctl      Caller-allocated control structure.
+ *  @param fd       Input file descriptor.
+ *  @param filelen  Byte length of the file to map.
+ *  @return 0 on success, -1 on error (errno is set).
+ */
+int hpx_init_mmap(hpx_ctrl_t *ctl, int fd, long filelen)
+{
+#ifdef WITH_MMAP
+   memset(ctl, 0, sizeof(*ctl));
+   ctl->fd = fd;
+   ctl->lineno = 1;
+   ctl->len = filelen;
+   ctl->buf.len = filelen;
+   if ((ctl->buf.buf = mmap(NULL, ctl->len, PROT_READ, MAP_PRIVATE | MAP_NORESERVE, fd, 0)) == MAP_FAILED)
+      return -1;
+   ctl->mmap = 1;
+   ctl->madv_ptr = ctl->buf.buf;
+   if ((ctl->pg_siz = sysconf(_SC_PAGESIZE)) == -1)
+      ctl->pg_siz = 0;
+   ctl->pg_blk_siz = ctl->pg_siz * MMAP_PAGES;
+   hpx_madvise(ctl->madv_ptr, ctl->pg_blk_siz <= ctl->len ? ctl->pg_blk_siz : ctl->len, MADV_WILLNEED);
+   return 0;
+#else
+   (void) ctl;
+   (void) fd;
+   (void) filelen;
+   errno = EINVAL;
+   return -1;
+#endif
+}
+
+
+/*! Release resources: calls munmap() when mmap was used.
+ *  ctl itself is caller-owned (no heap memory to free). */
 void hpx_free(hpx_ctrl_t *ctl)
 {
 #ifdef WITH_MMAP
    if (ctl->mmap)
-      // FIXME returned code should be checked
       (void) munmap(ctl->buf.buf, ctl->len);
+#else
+   (void) ctl;
 #endif
-   free(ctl);
 }
 
 
@@ -637,8 +617,9 @@ void hpx_free(hpx_ctrl_t *ctl)
 long hpx_get_eleml(hpx_ctrl_t *ctl, bstringl_t *b, int *in_tag, long *lno)
 {
    long s;
+   long iter;
 
-   for (;;)
+   for (iter = 0; iter < HPX_MAX_PARSE_ITER; iter++)
    {
 #ifdef WITH_MMAP
       if (ctl->mmap)
@@ -669,13 +650,14 @@ long hpx_get_eleml(hpx_ctrl_t *ctl, bstringl_t *b, int *in_tag, long *lno)
          }
          else
          {
+            int retry;
             // move remaining data to the beginning of the buffer
             ctl->buf.len -= ctl->pos;
             memmove(ctl->buf.buf, ctl->buf.buf + ctl->pos, ctl->buf.len);
             ctl->pos = 0;
 
             // read new data from file (but not the mem buffer, i.e. fd == -1)
-            for (s = 0; ctl->fd != -1;)
+            for (s = 0, retry = 0; ctl->fd != -1 && retry < HPX_MAX_EINTR_RETRY; retry++)
             {
                if ((s = read(ctl->fd, ctl->buf.buf + ctl->buf.len, ctl->len - ctl->buf.len)) != -1)
                   break;
@@ -720,6 +702,10 @@ long hpx_get_eleml(hpx_ctrl_t *ctl, bstringl_t *b, int *in_tag, long *lno)
 
       ctl->empty = 1;
    }
+
+   /* HPX_MAX_PARSE_ITER exhausted – distinguish from I/O error */
+   errno = ELOOP;
+   return -1;
 }
 
 
@@ -777,29 +763,6 @@ int hpx_fprintf_tag(FILE *f, const hpx_tag_t *p)
  
    }
    return 0;
-}
-
-
-/*! Resize tag tree.
- *  @param n Number of sub tags to add to tree.
- */
-int hpx_tree_resize(hpx_tree_t **tl, int n)
-{
-   int m;
-   hpx_tree_t *t;
-
-   m = *tl == NULL ? 0 : (*tl)->msub;
-
-   if ((t = realloc(*tl, sizeof(hpx_tree_t) + (m + n)  * sizeof(hpx_tag_t*))) == NULL)
-      return -1;
-
-  t->msub = n + m;
-   *tl = t;
-
-   for (; m < t->msub; m++)
-      (*tl)->subtag[m] = NULL;
- 
-   return t->msub;
 }
 
 
