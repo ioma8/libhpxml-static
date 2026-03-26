@@ -6,22 +6,29 @@
 #include "libhpxml.h"
 
 
-int is_doctype(const hpx_tag_t *tag)
+#define BUF_SIZE (4 * 1024 * 1024)
+
+static hpx_ctrl_t ctl;
+static char buf[BUF_SIZE];
+static hpx_tag_t tag;
+
+
+int is_doctype(const hpx_tag_t *t)
 {
-   return tag->type == HPX_ATT && tag->tag.len >= 8 && isspace(tag->tag.buf[7]) && !strncasecmp(tag->tag.buf, "DOCTYPE", 7);
+   return t->type == HPX_ATT && t->tag.len >= 8 && isspace(t->tag.buf[7]) && !strncasecmp(t->tag.buf, "DOCTYPE", 7);
 }
 
 
-int proc_subset(hpx_tag_t *tag)
+int proc_subset(hpx_tag_t *t)
 {
-   hpx_ctrl_t _ctl, *ctl = &_ctl;
+   hpx_ctrl_t _ctl;
    int i, sqcnt;
    bstring_t b;
    long lno;
 
    printf("===== BEGIN PROCESS SUBSET=====\n");
 
-   b = tag->tag;
+   b = t->tag;
 
    // skip until opening tag '['
    for (; b.len && *b.buf != '['; b.buf++, b.len--);
@@ -49,27 +56,23 @@ int proc_subset(hpx_tag_t *tag)
    if (i >= b.len || i < 2)
       return -1;
 
-   //printf("i = %d, len = %d, \"%.*s\"\n", i, b.len, b.len, b.buf);
-
    // remove enclosing square brackets
    b.len = i - 2;
    b.buf++;
 
-   //printf("i = %d, len = %d, \"%.*s\"\n", i, b.len, b.len, b.buf);
-
-   hpx_init_membuf(ctl, b.buf, b.len);
+   hpx_init_membuf(&_ctl, b.buf, b.len);
 
    // loop as long as XML elements are available
-   while (hpx_get_elem(ctl, &b, NULL, &lno) > 0)
+   while (hpx_get_elem(&_ctl, &b, NULL, &lno) > 0)
    {
       // parse XML element
-      if (!hpx_process_elem(b, tag))
+      if (!hpx_process_elem(b, t))
       {
          // element successfully parsed, do something with it
          // ...
          // ...
 
-         printf("[%ld] type=%d, name=%.*s, nattr=%d\n", lno, tag->type, tag->tag.len, tag->tag.buf, tag->nattr);
+         printf("[%ld] type=%d, name=%.*s, nattr=%d\n", lno, t->type, t->tag.len, t->tag.buf, t->nattr);
       }
       else
          printf("[%ld] ERROR in element: %.*s\n", lno, b.len, b.buf);
@@ -82,43 +85,38 @@ int proc_subset(hpx_tag_t *tag)
 
 int main(int argc, char *argv[])
 {
-   hpx_ctrl_t *ctl;
-   hpx_tag_t *tag;
    bstring_t b;
    long lno;
 
-   // initialize control structure, stdin, 100MB buffer
-   if ((ctl = hpx_init(0, 100*1024*1024)) == NULL)
-      perror("hpx_init"), exit(EXIT_FAILURE);
-   // initialize tag structure with maximum 16 attributes
-   if ((tag = hpx_tm_create(64)) == NULL)
-      perror("hpx_tm_create"), exit(EXIT_FAILURE);
+   (void) argc; (void) argv;
+
+   // initialize control structure from stdin using a static buffer
+   hpx_init_static(&ctl, buf, BUF_SIZE, 0);
+   // initialize tag structure with maximum 64 attributes
+   hpx_tag_init(&tag, HPX_MAX_ATTR);
 
    // loop as long as XML elements are available
-   while (hpx_get_elem(ctl, &b, NULL, &lno) > 0)
+   while (hpx_get_elem(&ctl, &b, NULL, &lno) > 0)
    {
       // parse XML element
-      if (!hpx_process_elem(b, tag))
+      if (!hpx_process_elem(b, &tag))
       {
          // element successfully parsed, do something with it
          // ...
          // ...
 
-         printf("[%ld] type=%d, name=%.*s, nattr=%d\n", lno, tag->type, tag->tag.len, tag->tag.buf, tag->nattr);
+         printf("[%ld] type=%d, name=%.*s, nattr=%d\n", lno, tag.type, tag.tag.len, tag.tag.buf, tag.nattr);
 
          // process doctype subtypes
-         if (is_doctype(tag))
-            proc_subset(tag);
+         if (is_doctype(&tag))
+            proc_subset(&tag);
       }
       else
          printf("[%ld] ERROR in element: %.*s\n", lno, b.len, b.buf);
    }
 
-   if (!ctl->eof)
+   if (!ctl.eof)
       perror("hpx_get_elem"), exit(EXIT_FAILURE);
-
-   hpx_tm_free(tag);
-   hpx_free(ctl);
 
    exit(EXIT_SUCCESS);
 }

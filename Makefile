@@ -20,13 +20,15 @@ CFLAGS	= -Wall -Isrc -O2
 SVNVER	= 1.2.0
 DISTDST	= libhpxml-r$(SVNVER)
 
-all: example example2 xml2xml
+all: example example2 xml2xml test
 
 example: example.o libhpxml.a
 
 example2: example2.o libhpxml.a
 
 xml2xml: xml2xml.o libhpxml.a
+
+test: test.o libhpxml.a
 
 libhpxml.a:
 	make -C src
